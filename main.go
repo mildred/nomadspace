@@ -17,7 +17,6 @@ import (
 	"github.com/hashicorp/consul-template/manager"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/api"
-	"github.com/hashicorp/nomad/jobspec"
 	"github.com/martinlindhe/base36"
 )
 
@@ -206,22 +205,6 @@ func readNomadAPI(nc *api.Client, fname string) (*api.Job, error) {
 	}
 
 	return job, nil
-}
-
-func readNomad(fname string) (*api.Job, error) {
-	f, err := os.Open(fname)
-	if err != nil {
-		return nil, err
-	}
-
-	defer f.Close()
-
-	res, err := jobspec.Parse(f)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to parse %v, %v", fname, err)
-	}
-
-	return res, nil
 }
 
 func readTemplate(fname string) (*config.TemplateConfig, error) {
