@@ -266,8 +266,8 @@ func (ns *NomadSpace) prefix(name string) string {
 }
 
 func (ns *NomadSpace) namespaceJob(job *api.Job) {
-	name := ns.prefix(*job.Name)
-	job.Name = &name
+	name := ns.prefix(*job.ID)
+	job.ID = &name
 	if job.Meta == nil {
 		job.Meta = map[string]string{}
 	}
@@ -288,11 +288,14 @@ func (ns *NomadSpace) namespaceJob(job *api.Job) {
 
 func (ns *NomadSpace) runJob(fname string, job *api.Job) error {
 	ns.namespaceJob(job)
-	log.Printf("Submit %v", fname)
+	log.Printf("Submit %v: %v", fname, *job.ID)
 	res, _, err := ns.nomadClient.Jobs().Register(job, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to submit %v, %v", fname, err)
+	}
 	log.Printf("Submitted %v: eval %v", fname, res.EvalID)
 	if len(res.Warnings) > 0 {
 		log.Printf("Submitted %v: WARNING %v", fname, res.Warnings)
 	}
-	return err
+	return nil
 }
