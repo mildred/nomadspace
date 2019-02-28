@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"flag"
@@ -9,8 +10,10 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/consul-template/config"
@@ -55,6 +58,16 @@ func main() {
 		inputDir = "."
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		s := <-sig
+		log.Printf("Received %v, terminating...", s)
+		cancel()
+		signal.Stop(sig)
+	}()
+
 	log.Printf("Starting NomadSpace %v", ns.Id)
 
 	ns.nomadClient, err = api.NewClient(api.DefaultConfig())
@@ -62,7 +75,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = ns.exec(inputDir)
+	err = ns.exec(ctx, inputDir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,7 +87,7 @@ type NomadSpace struct {
 	nomadClient *api.Client
 }
 
-func (ns *NomadSpace) exec(inputDir string) error {
+func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 	f, err := os.Open(inputDir)
 	if err != nil {
 		return err
@@ -127,6 +140,12 @@ func (ns *NomadSpace) exec(inputDir string) error {
 	}
 	if err != nil {
 		return err
+	}
+
+	if len(*cfg.Templates) == 0 {
+		log.Printf("Jobs are submitted, waiting forever...")
+		<-ctx.Done()
+		return ctx.Err()
 	}
 
 	runner, err := manager.NewRunner(cfg, false, false)
