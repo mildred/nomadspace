@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,11 +20,7 @@ import (
 	"github.com/hashicorp/consul-template/manager"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/api"
-	"github.com/martinlindhe/base36"
-)
-
-const (
-	Salt = "PhridcyunDryehorgedraflomcaInGiagyaumOfDyabsyacutNeldUd7"
+	"github.com/mildred/nomadspace/ns"
 )
 
 var (
@@ -32,32 +28,16 @@ var (
 	DefaultRightDelim = "]]"
 )
 
-func hash(data string) string {
-	sum := sha1.Sum([]byte(Salt + data))
-	return strings.ToLower(base36.EncodeBytes(sum[:])[0:8])
+func boolEnv(name string, defVal bool) bool {
+	val := os.Getenv(name)
+	res, err := strconv.ParseBool(val)
+	if err != nil || val == "" {
+		res = defVal
+	}
+	return res
 }
 
 func main() {
-	var err error
-	var inputDir string
-	var jobName string
-
-	flag.StringVar(&inputDir,
-		"input-dir", os.Getenv("NOMADSPACE_INPUT_DIR"),
-		"Input directory where to find Nomad jobs [NOMADSPACE_INPUT_DIR]")
-	flag.StringVar(&jobName,
-		"job-name", os.Getenv("NOMAD_JOB_NAME"),
-		"Job name to infer NomadSpace ID [NOMAD_JOB_NAME]")
-	flag.Parse()
-
-	ns := &NomadSpace{
-		Id: hash(jobName),
-	}
-
-	if inputDir == "" {
-		inputDir = "."
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
@@ -68,21 +48,70 @@ func main() {
 		signal.Stop(sig)
 	}()
 
-	log.Printf("Starting NomadSpace %v", ns.Id)
-
-	ns.nomadClient, err = api.NewClient(api.DefaultConfig())
+	err := run(ctx)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = ns.exec(ctx, inputDir)
-	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("ERROR: %v", err)
 	}
 }
 
+func run(ctx context.Context) error {
+	var err error
+	var inputDir string
+	var jobName string
+	var printRendered bool
+	var verboseCT bool
+
+	flag.StringVar(&inputDir,
+		"input-dir", os.Getenv("NOMADSPACE_INPUT_DIR"),
+		"Input directory where to find Nomad jobs [NOMADSPACE_INPUT_DIR]")
+	flag.StringVar(&jobName,
+		"job-name", os.Getenv("NOMAD_JOB_NAME"),
+		"Job name to infer NomadSpace ID [NOMAD_JOB_NAME]")
+	flag.BoolVar(&printRendered,
+		"print-rendered", boolEnv("NOMADSPACE_PRINT_RENDERED", false),
+		"Print rendered templates [NOMADSPACE_PRINT_RENDERED]")
+	flag.BoolVar(&verboseCT,
+		"verbose-consul-template", boolEnv("NOMADSPACE_VERBOSE_CONSUL_TEMPLATE", false),
+		"Print consul-template logs [NOMADSPACE_VERBOSE_CONSUL_TEMPLATE]")
+	flag.Parse()
+
+	log.Printf("Starting NomadSpace")
+
+	tmpdir, err := ioutil.TempDir("", "")
+	if err != nil {
+		return err
+	}
+
+	defer os.RemoveAll(tmpdir)
+
+	if inputDir == "" {
+		inputDir = "."
+	}
+
+	ns := &NomadSpace{
+		Id:            ns.Ns(jobName),
+		PrintRendered: printRendered,
+		RenderedDir:   tmpdir,
+		VerboseCT:     verboseCT,
+	}
+
+	log.Printf("NomadSpace id:           %v", ns.Id)
+	log.Printf("NomadSpace source dir:   %v", inputDir)
+	log.Printf("NomadSpace rendered dir: %v", tmpdir)
+
+	ns.nomadClient, err = api.NewClient(api.DefaultConfig())
+	if err != nil {
+		return err
+	}
+
+	return ns.exec(ctx, inputDir)
+}
+
 type NomadSpace struct {
-	Id string
+	Id            string
+	PrintRendered bool
+	VerboseCT     bool
+	RenderedDir   string
 
 	nomadClient *api.Client
 }
@@ -115,7 +144,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		} else if strings.HasSuffix(name, ".tmpl") {
 			log.Printf("Read Template %v", fname)
 			var templ *config.TemplateConfig
-			templ, e = readTemplate(fname)
+			templ, e = ns.readTemplate(fname)
 			if e == nil {
 				*cfg.Templates = append(*cfg.Templates, templ)
 			}
@@ -153,20 +182,43 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		return err
 	}
 
-	runner.Env = map[string]string{
-		"NOMADSPACE_ID": ns.Id,
+	runner.Env = map[string]string{}
+
+	if !ns.VerboseCT {
+		runner.SetOutStream(ioutil.Discard)
+		runner.SetErrStream(ioutil.Discard)
 	}
+
+	for _, env := range os.Environ() {
+		vals := strings.SplitN(env, "=", 2)
+		runner.Env[vals[0]] = vals[1]
+	}
+
+	runner.Env["NOMADSPACE_ID"] = ns.Id
 
 	now := time.Now()
 	go runner.Start()
 
 	for {
 		var next = now
-		<-runner.RenderEventCh()
-		for _, event := range runner.RenderEvents() {
+		select {
+		case <-runner.DoneCh:
+			log.Printf("Template done.")
+			break
+		case err := <-runner.ErrCh:
+			log.Printf("Template error: %v", err)
+			return err
+		case <-runner.TemplateRenderedCh():
+			log.Printf("Template rendered.")
+		case <-runner.RenderEventCh():
+			log.Printf("Template event.")
+		}
+		for i, event := range runner.RenderEvents() {
 			if now.After(event.UpdatedAt) {
+				log.Printf("Received event %v: updated before last check (%v < %v)", i, event.UpdatedAt, now)
 				continue
 			} else if next.Before(event.UpdatedAt) {
+				log.Printf("Received event %v: updated at %v", i, event.UpdatedAt)
 				next = event.UpdatedAt
 			}
 
@@ -178,7 +230,11 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 			}
 
 			if len(event.Contents) > 0 {
-				log.Printf("Rendered %v", fname)
+				if ns.PrintRendered {
+					log.Printf("Rendered %v:\n%s", fname, string(event.Contents))
+				} else {
+					log.Printf("Rendered %v", fname)
+				}
 				if strings.HasSuffix(fname, ".json.tmpl") {
 					err = ns.runJSONJob(fname, event.Contents)
 				} else {
@@ -189,6 +245,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 				}
 			}
 		}
+		log.Printf("Handled events updated last at %v", next)
 		now = next
 	}
 
@@ -226,12 +283,14 @@ func readNomadAPI(nc *api.Client, fname string) (*api.Job, error) {
 	return job, nil
 }
 
-func readTemplate(fname string) (*config.TemplateConfig, error) {
+func (ns *NomadSpace) readTemplate(fname string) (*config.TemplateConfig, error) {
 	var cfg = config.DefaultTemplateConfig()
+	var dst = path.Join(ns.RenderedDir, path.Base(fname))
 
 	cfg.Source = &fname
 	cfg.LeftDelim = &DefaultLeftDelim
 	cfg.RightDelim = &DefaultRightDelim
+	cfg.Destination = &dst
 	cfg.Finalize()
 
 	return cfg, nil
