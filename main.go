@@ -128,6 +128,8 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		return err
 	}
 
+	log.Printf("Found %d files in input dir %s", len(names), inputDir)
+
 	var jobs = map[string]*api.Job{}
 	var cfg *config.Config = config.DefaultConfig()
 

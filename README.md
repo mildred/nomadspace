@@ -99,3 +99,8 @@ Without input, returns the current nomadspace id (taken from the environment)
         - add environment variables for each task `NOMADSPACE_ID`
         - prefix each service stanza by "$NS_ID-"
     - Run the job in Nomad
+
+### Future ideas ###
+
+- Handle `.keys` files and write the specified keys to Consul
+
