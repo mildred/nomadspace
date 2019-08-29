@@ -177,7 +177,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		return ctx.Err()
 	}
 
-	runner, err := manager.NewRunner(cfg, false, false)
+	runner, err := manager.NewRunner(cfg, false)
 	if err != nil {
 		return err
 	}
