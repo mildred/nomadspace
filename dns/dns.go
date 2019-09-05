@@ -176,6 +176,14 @@ func ErrorResponse(req *dns.Msg, rcode int) *dns.Msg {
 	return m
 }
 
+func questionsStrings(questions []dns.Question) []string {
+	var res []string
+	for _, q := range questions {
+		res = append(res, q.String())
+	}
+	return res
+}
+
 func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 	ctx := h.Context
 	resp := new(dns.Msg)
@@ -186,7 +194,7 @@ func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	defer func(s time.Time) {
 		log.Printf("[DEBUG] dns: request for %v (%v) from client %s (%s)",
-			req.Question, time.Since(s), w.RemoteAddr().String(),
+			questionsStrings(req.Question), time.Since(s), w.RemoteAddr().String(),
 			w.RemoteAddr().Network())
 	}(time.Now())
 
@@ -256,12 +264,12 @@ func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 
 		recRes := Recurse(ctx, w.RemoteAddr(), recReq, h.ConsulRecursors)
 		if recRes.Rcode == dns.RcodeSuccess {
-			log.Printf("[DEBUG] dns: recurse %s on %v: %v",
-				recReq.Question[0].String(), h.ConsulRecursors, resp.Answer)
+			log.Printf("[DEBUG] dns: recurse %v on %v: %v",
+				questionsStrings(req.Question), h.ConsulRecursors, resp.Answer)
 			resp.Answer = append(resp.Answer, recRes.Answer...)
 		} else {
-			log.Printf("[DEBUG] dns: recurse %s on %v failed with code %v",
-				recReq.Question[0].String(), h.ConsulRecursors, dns.RcodeToString[recRes.Rcode])
+			log.Printf("[DEBUG] dns: recurse %v on %v failed with code %v",
+				questionsStrings(req.Question), h.ConsulRecursors, dns.RcodeToString[recRes.Rcode])
 		}
 	}
 
