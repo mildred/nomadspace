@@ -256,12 +256,12 @@ func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 
 		recRes := Recurse(ctx, w.RemoteAddr(), recReq, h.ConsulRecursors)
 		if recRes.Rcode == dns.RcodeSuccess {
-			log.Printf("[DEBUG] dns: recurse %v: %v",
-				recReq.Question[0], resp.Answer)
+			log.Printf("[DEBUG] dns: recurse %s on %v: %v",
+				recReq.Question[0].String(), h.ConsulRecursors, resp.Answer)
 			resp.Answer = append(resp.Answer, recRes.Answer...)
 		} else {
-			log.Printf("[DEBUG] dns: recurse %v failed with code %v",
-				recReq.Question[0], dns.RcodeToString[recRes.Rcode])
+			log.Printf("[DEBUG] dns: recurse %s on %v failed with code %v",
+				recReq.Question[0].String(), h.ConsulRecursors, dns.RcodeToString[recRes.Rcode])
 		}
 	}
 
