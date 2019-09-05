@@ -85,7 +85,7 @@ func runServer(ctx context.Context, wg *sync.WaitGroup, net string, args *Args, 
 		defer cancel()
 	}()
 
-	log.Printf("Listening on %v %v...", server.Net, server.Addr)
+	log.Printf("[INFO] dns: Listening on %v %v...", server.Net, server.Addr)
 	e <- server.ListenAndServe()
 }
 
@@ -124,6 +124,11 @@ func (h *Handler) ServeConsulRecursor(w dns.ResponseWriter, req *dns.Msg) {
 func Recurse(ctx context.Context, raddr net.Addr, req *dns.Msg, recursors []string) *dns.Msg {
 	q := req.Question[0]
 	network := "udp"
+	defer func(s time.Time) {
+		log.Printf("[DEBUG] dns: request for %v (%s) (%v) from client %s (%s)",
+			q, network, time.Since(s), raddr.String(),
+			raddr.Network())
+	}(time.Now())
 
 	// Switch to TCP if the client is
 	if _, ok := raddr.(*net.TCPAddr); ok {
@@ -178,6 +183,12 @@ func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 	resp.Compress = true
 	resp.Authoritative = true
 	resp.RecursionAvailable = false
+
+	defer func(s time.Time) {
+		log.Printf("[DEBUG] dns: request for %v (%v) from client %s (%s)",
+			req.Question, time.Since(s), w.RemoteAddr().String(),
+			w.RemoteAddr().Network())
+	}(time.Now())
 
 	var err error
 	for _, q := range req.Question {
@@ -245,7 +256,12 @@ func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 
 		recRes := Recurse(ctx, w.RemoteAddr(), recReq, h.ConsulRecursors)
 		if recRes.Rcode == dns.RcodeSuccess {
+			log.Printf("[DEBUG] dns: recurse %v: %v",
+				recReq.Question[0], resp.Answer)
 			resp.Answer = append(resp.Answer, recRes.Answer...)
+		} else {
+			log.Printf("[DEBUG] dns: recurse %v failed with code %v",
+				recReq.Question[0], dns.RcodeToString[resp.Rcode])
 		}
 	}
 
