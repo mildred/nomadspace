@@ -37,6 +37,14 @@ func boolEnv(name string, defVal bool) bool {
 	return res
 }
 
+func stringEnv(name, defVal string) string {
+	val, hasVal := os.LookupEnv(name)
+	if !hasVal {
+		val = defVal
+	}
+	return val
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
@@ -60,6 +68,10 @@ func run(ctx context.Context) error {
 	var jobName string
 	var printRendered bool
 	var verboseCT bool
+	var dnsServer string
+	var dnsSearch string
+	var dnsSearchNsDNS bool
+	var dnsSearchConsul bool
 
 	flag.StringVar(&inputDir,
 		"input-dir", os.Getenv("NOMADSPACE_INPUT_DIR"),
@@ -73,7 +85,31 @@ func run(ctx context.Context) error {
 	flag.BoolVar(&verboseCT,
 		"verbose-consul-template", boolEnv("NOMADSPACE_VERBOSE_CONSUL_TEMPLATE", false),
 		"Print consul-template logs [NOMADSPACE_VERBOSE_CONSUL_TEMPLATE]")
+	flag.StringVar(&dnsServer,
+		"dns-server", stringEnv("NOMADSPACE_DNS_SERVER", ""),
+		"DNS server to override in jobs [NOMADSPACE_DNS_SERVER]")
+	flag.StringVar(&dnsSearch,
+		"dns-search", stringEnv("NOMADSPACE_DNS_SEARCH", ""),
+		"DNS search, ${NS} replaced with namespace [NOMADSPACE_DNS_SEARCH]")
+	flag.BoolVar(&dnsSearchNsDNS,
+		"dns-search-nsdns", boolEnv("NOMADSPACE_DNS_SEARCH_NSDNS", boolEnv("NOMADSPACE_NSDNS", false)),
+		"Alias for --dns-search=service.${NS}.ns-consul. [NOMADSPACE_DNS_SEARCH_NSDNS, NOMADSPACE_NSDNS]")
+	flag.BoolVar(&dnsSearchConsul,
+		"dns-search-consul", boolEnv("NOMADSPACE_DNS_SEARCH_CONSUL", false),
+		"Alias for --dns-search=service.consul. [NOMADSPACE_DNS_SEARCH_CONSUL]")
 	flag.Parse()
+
+	if dnsSearchConsul {
+		if dnsSearchNsDNS || dnsSearch != "" {
+			return fmt.Errorf("Cannot set both --dns-search-consul with other --dns-search options")
+		}
+		dnsSearch = "service.consul."
+	} else if dnsSearchNsDNS {
+		if dnsSearchConsul || dnsSearch != "" {
+			return fmt.Errorf("Cannot set both --dns-search-nsdns with other --dns-search options")
+		}
+		dnsSearch = "service.${NS}.ns-consul."
+	}
 
 	log.Printf("Starting NomadSpace")
 
@@ -88,11 +124,14 @@ func run(ctx context.Context) error {
 		inputDir = "."
 	}
 
+	nsId := ns.Ns(jobName)
 	ns := &NomadSpace{
-		Id:            ns.Ns(jobName),
+		Id:            nsId,
 		PrintRendered: printRendered,
 		RenderedDir:   tmpdir,
 		VerboseCT:     verboseCT,
+		DNSSearch:     strings.Replace(dnsSearch, "${NS}", nsId, -1),
+		DNSServer:     dnsServer,
 	}
 
 	log.Printf("NomadSpace id:           %v", ns.Id)
@@ -112,6 +151,8 @@ type NomadSpace struct {
 	PrintRendered bool
 	VerboseCT     bool
 	RenderedDir   string
+	DNSSearch     string
+	DNSServer     string
 
 	nomadClient *api.Client
 }
@@ -197,6 +238,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 	}
 
 	runner.Env["NOMADSPACE_ID"] = ns.Id
+	runner.Env["NS"] = ns.Id
 
 	now := time.Now()
 	go runner.Start()
@@ -340,10 +382,37 @@ func (ns *NomadSpace) namespaceJob(job *api.Job) {
 				task.Env = map[string]string{}
 			}
 			task.Env["NOMADSPACE_ID"] = ns.Id
+			switch task.Driver {
+			case "docker", "rkt":
+				if ns.DNSSearch != "" {
+					searchDomains := toStringList(task.Config["dns_search_domains"])
+					searchDomains = append(searchDomains, ns.DNSSearch)
+					task.Config["dns_search_domains"] = searchDomains
+				}
+				if ns.DNSServer != "" {
+					servers := toStringList(task.Config["dns_servers"])
+					servers = append(servers, ns.DNSServer)
+					task.Config["dns_servers"] = servers
+				}
+			}
 			for _, service := range task.Services {
 				service.Name = ns.prefix(service.Name)
 			}
 		}
+	}
+}
+
+func toStringList(val interface{}) []string {
+	if val == nil {
+		return nil
+	}
+	switch v := val.(type) {
+	case string:
+		return []string{v}
+	case []string:
+		return v
+	default:
+		return nil
 	}
 }
 
