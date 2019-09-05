@@ -20,7 +20,9 @@ import (
 	"github.com/hashicorp/consul-template/manager"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/api"
+	"github.com/mildred/nomadspace/dns"
 	"github.com/mildred/nomadspace/ns"
+	"github.com/mildred/nomadspace/waitgroup"
 )
 
 var (
@@ -72,6 +74,8 @@ func run(ctx context.Context) error {
 	var dnsSearch string
 	var dnsSearchNsDNS bool
 	var dnsSearchConsul bool
+	var nsdnsEnable bool
+	var nsdnsArgs nsdns.Args
 
 	flag.StringVar(&inputDir,
 		"input-dir", os.Getenv("NOMADSPACE_INPUT_DIR"),
@@ -97,6 +101,21 @@ func run(ctx context.Context) error {
 	flag.BoolVar(&dnsSearchConsul,
 		"dns-search-consul", boolEnv("NOMADSPACE_DNS_SEARCH_CONSUL", false),
 		"Alias for --dns-search=service.consul. [NOMADSPACE_DNS_SEARCH_CONSUL]")
+	flag.BoolVar(&nsdnsEnable,
+		"nsdns", boolEnv("NOMADSPACE_NSDNS", false),
+		"Start DNS server and set --dns-search (--dns-server should be set to reachable IP address) [NOMADSPACE_NSDNS]")
+	flag.StringVar(&nsdnsArgs.ConsulServer,
+		"nsdns-consul-server", "127.0.0.1:8600",
+		"Consul DNS server")
+	flag.StringVar(&nsdnsArgs.Listen,
+		"nsdns-listen", stringEnv("NSDNS_LISTEN_ADDR", "127.0.0.1:9653"),
+		"Listen address [NSDNS_LISTEN_ADDR]")
+	flag.StringVar(&nsdnsArgs.Domain,
+		"nsdns-domain", stringEnv("NSDNS_DOMAIN", "ns-consul."),
+		"Domain to serve [NSDNS_DOMAIN]")
+	flag.StringVar(&nsdnsArgs.ConsulDomain,
+		"nsdns-consul-domain", stringEnv("NSDNS_CONSUL_DOMAIN", "consul."),
+		"Domain to recurse to consul [NSDNS_CONSUL_DOMAIN]")
 	flag.Parse()
 
 	if dnsSearchConsul {
@@ -108,6 +127,10 @@ func run(ctx context.Context) error {
 		if dnsSearchConsul || dnsSearch != "" {
 			return fmt.Errorf("Cannot set both --dns-search-nsdns with other --dns-search options")
 		}
+		dnsSearch = "service.${NS}.ns-consul."
+	}
+
+	if nsdnsEnable && dnsSearch == "" {
 		dnsSearch = "service.${NS}.ns-consul."
 	}
 
@@ -143,7 +166,19 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	return ns.exec(ctx, inputDir)
+	wg := waitgroup.New()
+
+	if nsdnsEnable {
+		wg.Start(func() error {
+			return nsdns.Run(ctx, &nsdnsArgs)
+		})
+	}
+
+	wg.Start(func() error {
+		return ns.exec(ctx, inputDir)
+	})
+
+	return wg.Wait()
 }
 
 type NomadSpace struct {
