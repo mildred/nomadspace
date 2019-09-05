@@ -261,7 +261,7 @@ func (h *Handler) ServeConsulNS(w dns.ResponseWriter, req *dns.Msg) {
 			resp.Answer = append(resp.Answer, recRes.Answer...)
 		} else {
 			log.Printf("[DEBUG] dns: recurse %v failed with code %v",
-				recReq.Question[0], dns.RcodeToString[resp.Rcode])
+				recReq.Question[0], dns.RcodeToString[recRes.Rcode])
 		}
 	}
 
