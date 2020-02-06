@@ -275,6 +275,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		runner.Env[vals[0]] = vals[1]
 	}
 
+	runner.Env["GEN_DIR"] = ns.RenderedDir
 	runner.Env["NOMADSPACE_ID"] = ns.Id
 	runner.Env["NS"] = ns.Id
 

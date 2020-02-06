@@ -70,6 +70,12 @@ based itself on [Go templates](https://golang.org/pkg/text/template/)
 and additional commands are available. This allows nomad job to be updated
 automatically on Vault or Consul key change, and react to environment changes.
 
+The additional environment variables in templating available (through
+`env "ENV_NAME"`) are:
+
+- `NS`, `NOMADSPACE_ID`: the NomadSpace ID
+- `GEN_DIR`: the template generation dir (so you can import templated files)
+
 The additional commands available are:
 
 #### `ns` ####
