@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"sort"
 	"time"
 
 	"github.com/hashicorp/consul-template/config"
@@ -203,6 +204,8 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 	if err != nil {
 		return err
 	}
+
+	sort.Strings(names)
 
 	log.Printf("Found %d files in input dir %s", len(names), inputDir)
 
