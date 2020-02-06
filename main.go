@@ -225,7 +225,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		} else if strings.HasSuffix(name, ".tmpl") {
 			log.Printf("Read Template %v", fname)
 			var templ *config.TemplateConfig
-			templ, e = ns.readTemplate(fname)
+			templ, e = ns.readTemplate(fname, path.Base(fname[:len(fname)-5]))
 			if e == nil {
 				*cfg.Templates = append(*cfg.Templates, templ)
 			}
@@ -365,9 +365,9 @@ func readNomadAPI(nc *api.Client, fname string) (*api.Job, error) {
 	return job, nil
 }
 
-func (ns *NomadSpace) readTemplate(fname string) (*config.TemplateConfig, error) {
+func (ns *NomadSpace) readTemplate(fname, dstname string) (*config.TemplateConfig, error) {
 	var cfg = config.DefaultTemplateConfig()
-	var dst = path.Join(ns.RenderedDir, path.Base(fname))
+	var dst = path.Join(ns.RenderedDir, dstname)
 
 	cfg.Source = &fname
 	cfg.LeftDelim = &DefaultLeftDelim
