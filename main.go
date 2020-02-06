@@ -11,10 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
-	"sort"
 	"time"
 
 	"github.com/hashicorp/consul-template/config"
@@ -77,6 +77,7 @@ func run(ctx context.Context) error {
 	var dnsSearchConsul bool
 	var nsdnsEnable bool
 	var nsdnsArgs nsdns.Args
+	var logCT bool
 
 	flag.StringVar(&inputDir,
 		"input-dir", os.Getenv("NOMADSPACE_INPUT_DIR"),
@@ -87,6 +88,9 @@ func run(ctx context.Context) error {
 	flag.BoolVar(&printRendered,
 		"print-rendered", boolEnv("NOMADSPACE_PRINT_RENDERED", false),
 		"Print rendered templates [NOMADSPACE_PRINT_RENDERED]")
+	flag.BoolVar(&logCT,
+		"log-consul-template", boolEnv("NOMADSPACE_LOG_CONSUL_TEMPLATE", false),
+		"Print consul-template small logs [NOMADSPACE_LOG_CONSUL_TEMPLATE]")
 	flag.BoolVar(&verboseCT,
 		"verbose-consul-template", boolEnv("NOMADSPACE_VERBOSE_CONSUL_TEMPLATE", false),
 		"Print consul-template logs [NOMADSPACE_VERBOSE_CONSUL_TEMPLATE]")
@@ -135,7 +139,12 @@ func run(ctx context.Context) error {
 		dnsSearch = "service.${NS}.ns-consul."
 	}
 
-	log.Printf("Starting NomadSpace")
+	l := log.New(os.Stderr, "", log.LstdFlags)
+	l.Printf("Starting NomadSpace")
+
+	if !logCT {
+		log.SetOutput(ioutil.Discard)
+	}
 
 	tmpdir, err := ioutil.TempDir("", "")
 	if err != nil {
@@ -158,9 +167,9 @@ func run(ctx context.Context) error {
 		DNSServer:     dnsServer,
 	}
 
-	log.Printf("NomadSpace id:           %v", ns.Id)
-	log.Printf("NomadSpace source dir:   %v", inputDir)
-	log.Printf("NomadSpace rendered dir: %v", tmpdir)
+	l.Printf("NomadSpace id:           %v", ns.Id)
+	l.Printf("NomadSpace source dir:   %v", inputDir)
+	l.Printf("NomadSpace rendered dir: %v", tmpdir)
 
 	ns.nomadClient, err = api.NewClient(api.DefaultConfig())
 	if err != nil {
@@ -176,7 +185,7 @@ func run(ctx context.Context) error {
 	}
 
 	wg.Start(func() error {
-		return ns.exec(ctx, inputDir)
+		return ns.exec(ctx, l, inputDir)
 	})
 
 	return wg.Wait()
@@ -193,7 +202,7 @@ type NomadSpace struct {
 	nomadClient *api.Client
 }
 
-func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
+func (ns *NomadSpace) exec(ctx context.Context, l *log.Logger, inputDir string) error {
 	f, err := os.Open(inputDir)
 	if err != nil {
 		return err
@@ -207,7 +216,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 
 	sort.Strings(names)
 
-	log.Printf("Found %d files in input dir %s", len(names), inputDir)
+	l.Printf("Found %d files in input dir %s", len(names), inputDir)
 
 	var jobs = map[string]*api.Job{}
 	var cfg *config.Config = config.DefaultConfig()
@@ -217,20 +226,20 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		var e error
 		var fname = path.Join(inputDir, name)
 		if strings.HasSuffix(name, ".json") {
-			log.Printf("Read JSON %v", fname)
+			l.Printf("Read JSON %v", fname)
 			job, e = readJSON(fname)
 		} else if strings.HasSuffix(name, ".nomad") {
-			log.Printf("Read Nomad %v", fname)
+			l.Printf("Read Nomad %v", fname)
 			job, e = readNomadAPI(ns.nomadClient, fname)
 		} else if strings.HasSuffix(name, ".tmpl") {
-			log.Printf("Read Template %v", fname)
+			l.Printf("Read Template %v", fname)
 			var templ *config.TemplateConfig
 			templ, e = ns.readTemplate(fname, path.Base(fname[:len(fname)-5]))
 			if e == nil {
 				*cfg.Templates = append(*cfg.Templates, templ)
 			}
 		} else {
-			log.Printf("Ignore %v", fname)
+			l.Printf("Ignore %v", fname)
 		}
 		if e != nil {
 			err = multierror.Append(err, e).ErrorOrNil()
@@ -243,7 +252,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 	}
 
 	for fname, job := range jobs {
-		e := ns.runJob(fname, job)
+		e := ns.runJob(l, fname, job)
 		if e != nil {
 			err = multierror.Append(err, e).ErrorOrNil()
 		}
@@ -253,7 +262,7 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 	}
 
 	if len(*cfg.Templates) == 0 {
-		log.Printf("Jobs are submitted, waiting forever...")
+		l.Printf("Jobs are submitted, waiting forever...")
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -266,13 +275,13 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 
 		runner.Env = map[string]string{}
 
-		log.Println()
+		l.Println()
 		if !ns.VerboseCT {
-			log.Println("Running consul-template silently...")
+			l.Println("Running consul-template silently...")
 			runner.SetOutStream(ioutil.Discard)
 			runner.SetErrStream(ioutil.Discard)
 		} else {
-			log.Println("Running consul-template with full logs...")
+			l.Println("Running consul-template with full logs...")
 		}
 
 		for _, env := range os.Environ() {
@@ -293,32 +302,35 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		numRendering := 0
 		for started {
 			var next = now
-			log.Println()
+			l.Println()
 			select {
 			case <-runner.DoneCh:
-				log.Printf("Template done.")
+				l.Printf("Template done.")
 				started = false
 			case err = <-runner.ErrCh:
-				log.Printf("Template error: %v", err)
+				l.Printf("Template error: %v", err)
 				started = false
 			case <-runner.TemplateRenderedCh():
-				log.Printf("Template rendered...")
+				l.Printf("Template rendered...")
 			case <-runner.RenderEventCh():
-				log.Printf("Template events...")
+				l.Printf("Template events...")
 			}
-			for i, event := range runner.RenderEvents() {
+			i := 0
+			for eventId, event := range runner.RenderEvents() {
+				i += 1
+				_ = eventId
 				if now.After(event.UpdatedAt) {
-					//log.Printf("... received event %v: updated before last check (%v < %v)", i, event.UpdatedAt, now)
+					//l.Printf("... received event %v: updated before last check (%v < %v)", eventId, event.UpdatedAt, now)
 					continue
 				} else if next.Before(event.UpdatedAt) {
-					//log.Printf("... received event %v: updated at %v", i, event.UpdatedAt)
+					//l.Printf("... received event %v: updated at %v", eventId, event.UpdatedAt)
 					next = event.UpdatedAt
 				}
 
 				fname := path.Base(*event.TemplateConfigs[0].Source)
 				if event.MissingDeps != nil {
 					for _, dep := range event.MissingDeps.List() {
-						log.Printf("[%d|%v] Missing dep for %v: %v", i, event.UpdatedAt, fname, dep)
+						l.Printf("[%d] Missing dep for %v: %v (%v)", i, fname, dep, event.UpdatedAt)
 						numMissingDeps += 1
 					}
 				}
@@ -326,29 +338,29 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 				if len(event.Contents) > 0 {
 					numRendering += 1
 					if ns.PrintRendered {
-						log.Printf("[%d|%v] Rendered %v:\n%s", i, event.UpdatedAt, fname, string(event.Contents))
+						l.Printf("[%d] Rendered %v: (%v)\n%s", i, fname, event.UpdatedAt, string(event.Contents))
 					} else {
-						log.Printf("[%d|%v] Rendered %v", i, event.UpdatedAt, fname)
+						l.Printf("[%d] Rendered %v (%v)", i, fname, event.UpdatedAt)
 					}
 					err = nil
 					if strings.HasSuffix(fname, ".json.tmpl") {
-						err = ns.runJSONJob(fname, event.Contents)
+						err = ns.runJSONJob(l, fname, event.Contents)
 					} else if strings.HasSuffix(fname, ".nomad.tmpl") {
-						err = ns.runNomadJob(fname, event.Contents)
+						err = ns.runNomadJob(l, fname, event.Contents)
 					}
 					if err != nil {
-						log.Printf("[%d|%v] ERROR rendering %v: %v", i, event.UpdatedAt, fname, err)
+						l.Printf("[%d] ERROR rendering %v: %v", i, event.UpdatedAt, fname, err)
 					}
 				}
 			}
-			//log.Printf("Handled events updated last at %v", next)
+			//l.Printf("Handled events updated last at %v", next)
 			now = next
 		}
-		log.Printf("Templating stopped.")
+		l.Printf("Templating stopped.")
 		if err != nil && numRendering > 0 {
 			// In case of errors, but some files have been rendered
 			// retry
-			log.Printf("Template error, retry templating.")
+			l.Printf("Template error, retry templating.")
 			continue
 		} else {
 			break
@@ -402,7 +414,7 @@ func (ns *NomadSpace) readTemplate(fname, dstname string) (*config.TemplateConfi
 	return cfg, nil
 }
 
-func (ns *NomadSpace) runJSONJob(fname string, content []byte) error {
+func (ns *NomadSpace) runJSONJob(l *log.Logger, fname string, content []byte) error {
 	var job api.Job
 
 	r := bytes.NewReader(content)
@@ -411,16 +423,16 @@ func (ns *NomadSpace) runJSONJob(fname string, content []byte) error {
 		return fmt.Errorf("Failed to parse rendered %v, %v", fname, err)
 	}
 
-	return ns.runJob(fname, &job)
+	return ns.runJob(l, fname, &job)
 }
 
-func (ns *NomadSpace) runNomadJob(fname string, content []byte) error {
+func (ns *NomadSpace) runNomadJob(l *log.Logger, fname string, content []byte) error {
 	job, err := ns.nomadClient.Jobs().ParseHCL(string(content), true)
 	if err != nil {
 		return fmt.Errorf("Failed to parse rendered %v, %v", fname, err)
 	}
 
-	return ns.runJob(fname, job)
+	return ns.runJob(l, fname, job)
 }
 
 func (ns *NomadSpace) prefix(name string) string {
@@ -478,16 +490,16 @@ func toStringList(val interface{}) []string {
 	}
 }
 
-func (ns *NomadSpace) runJob(fname string, job *api.Job) error {
+func (ns *NomadSpace) runJob(l *log.Logger, fname string, job *api.Job) error {
 	ns.namespaceJob(job)
-	log.Printf("Submit %v: %v", fname, *job.ID)
 	res, _, err := ns.nomadClient.Jobs().Register(job, nil)
 	if err != nil {
-		return fmt.Errorf("Failed to submit %v, %v", fname, err)
+		l.Printf("Submitted %v as %v: ERROR %v", fname, *job.ID, err)
+		return fmt.Errorf("failed to submit %v as %v, %v", fname, *job.ID, err)
 	}
-	log.Printf("Submitted %v: eval %v", fname, res.EvalID)
+	l.Printf("Submitted %v as %v: eval %v", fname, *job.ID, res.EvalID)
 	if len(res.Warnings) > 0 {
-		log.Printf("Submitted %v: WARNING %v", fname, res.Warnings)
+		l.Printf("Submitted %v as %v: WARNING %v", fname, *job.ID, res.Warnings)
 	}
 	return nil
 }
