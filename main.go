@@ -279,58 +279,75 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 	runner.Env["NOMADSPACE_ID"] = ns.Id
 	runner.Env["NS"] = ns.Id
 
-	now := time.Now()
-	go runner.Start()
-
 	for {
-		var next = now
-		select {
-		case <-runner.DoneCh:
-			log.Printf("Template done.")
+		now := time.Now()
+		go runner.Start()
+
+		err = nil
+		started := true
+		numMissingDeps := 0
+		numRendering := 0
+		for started {
+			var next = now
+			select {
+			case <-runner.DoneCh:
+				log.Printf("\nTemplate done.")
+				started = false
+			case err = <-runner.ErrCh:
+				log.Printf("\nTemplate error: %v", err)
+				started = false
+			case <-runner.TemplateRenderedCh():
+				log.Printf("\nTemplate rendered...")
+			case <-runner.RenderEventCh():
+				log.Printf("\nTemplate events...")
+			}
+			for i, event := range runner.RenderEvents() {
+				if now.After(event.UpdatedAt) {
+					log.Printf("... received event %v: updated before last check (%v < %v)", i, event.UpdatedAt, now)
+					continue
+				} else if next.Before(event.UpdatedAt) {
+					log.Printf("... received event %v: updated at %v", i, event.UpdatedAt)
+					next = event.UpdatedAt
+				}
+
+				fname := path.Base(*event.TemplateConfigs[0].Source)
+				if event.MissingDeps != nil {
+					for _, dep := range event.MissingDeps.List() {
+						log.Printf("Missing dep for %v: %v", fname, dep)
+						numMissingDeps += 1
+					}
+				}
+
+				if len(event.Contents) > 0 {
+					numRendering += 1
+					if ns.PrintRendered {
+						log.Printf("Rendered %v:\n%s", fname, string(event.Contents))
+					} else {
+						log.Printf("Rendered %v", fname)
+					}
+					err = nil
+					if strings.HasSuffix(fname, ".json.tmpl") {
+						err = ns.runJSONJob(fname, event.Contents)
+					} else if strings.HasSuffix(fname, ".nomad.tmpl") {
+						err = ns.runNomadJob(fname, event.Contents)
+					}
+					if err != nil {
+						log.Printf("ERROR rendering %v: %v", fname, err)
+					}
+				}
+			}
+			log.Printf("Handled events updated last at %v", next)
+			now = next
+		}
+		log.Printf("Templating stopped.")
+		if err != nil && numRendering > 0 {
+			// In case of errors, but some files have been rendered
+			// retry
+			log.Printf("Template error, retry templating.")
+			continue
+		} else {
 			break
-		case err := <-runner.ErrCh:
-			log.Printf("Template error: %v", err)
-			return err
-		case <-runner.TemplateRenderedCh():
-			log.Printf("Template rendered.")
-		case <-runner.RenderEventCh():
-			log.Printf("Template event.")
 		}
-		for i, event := range runner.RenderEvents() {
-			if now.After(event.UpdatedAt) {
-				log.Printf("Received event %v: updated before last check (%v < %v)", i, event.UpdatedAt, now)
-				continue
-			} else if next.Before(event.UpdatedAt) {
-				log.Printf("Received event %v: updated at %v", i, event.UpdatedAt)
-				next = event.UpdatedAt
-			}
-
-			fname := path.Base(*event.TemplateConfigs[0].Source)
-			if event.MissingDeps != nil {
-				for _, dep := range event.MissingDeps.List() {
-					log.Printf("Missing dep for %v: %v", fname, dep)
-				}
-			}
-
-			if len(event.Contents) > 0 {
-				if ns.PrintRendered {
-					log.Printf("Rendered %v:\n%s", fname, string(event.Contents))
-				} else {
-					log.Printf("Rendered %v", fname)
-				}
-				err = nil
-				if strings.HasSuffix(fname, ".json.tmpl") {
-					err = ns.runJSONJob(fname, event.Contents)
-				} else if strings.HasSuffix(fname, ".nomad.tmpl") {
-					err = ns.runNomadJob(fname, event.Contents)
-				}
-				if err != nil {
-					log.Printf("ERROR rendering %v: %v", fname, err)
-				}
-			}
-		}
-		log.Printf("Handled events updated last at %v", next)
-		now = next
 	}
 
 	return nil
