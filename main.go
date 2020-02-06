@@ -258,28 +258,32 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		return ctx.Err()
 	}
 
-	runner, err := manager.NewRunner(cfg, false)
-	if err != nil {
-		return err
-	}
-
-	runner.Env = map[string]string{}
-
-	if !ns.VerboseCT {
-		runner.SetOutStream(ioutil.Discard)
-		runner.SetErrStream(ioutil.Discard)
-	}
-
-	for _, env := range os.Environ() {
-		vals := strings.SplitN(env, "=", 2)
-		runner.Env[vals[0]] = vals[1]
-	}
-
-	runner.Env["GEN_DIR"] = ns.RenderedDir
-	runner.Env["NOMADSPACE_ID"] = ns.Id
-	runner.Env["NS"] = ns.Id
-
 	for {
+		runner, err := manager.NewRunner(cfg, false)
+		if err != nil {
+			return err
+		}
+
+		runner.Env = map[string]string{}
+
+		log.Println()
+		if !ns.VerboseCT {
+			log.Println("Running consul-template silently...")
+			runner.SetOutStream(ioutil.Discard)
+			runner.SetErrStream(ioutil.Discard)
+		} else {
+			log.Println("Running consul-template with full logs...")
+		}
+
+		for _, env := range os.Environ() {
+			vals := strings.SplitN(env, "=", 2)
+			runner.Env[vals[0]] = vals[1]
+		}
+
+		runner.Env["GEN_DIR"] = ns.RenderedDir
+		runner.Env["NOMADSPACE_ID"] = ns.Id
+		runner.Env["NS"] = ns.Id
+
 		now := time.Now()
 		go runner.Start()
 
@@ -289,31 +293,32 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 		numRendering := 0
 		for started {
 			var next = now
+			log.Println()
 			select {
 			case <-runner.DoneCh:
-				log.Printf("\nTemplate done.")
+				log.Printf("Template done.")
 				started = false
 			case err = <-runner.ErrCh:
-				log.Printf("\nTemplate error: %v", err)
+				log.Printf("Template error: %v", err)
 				started = false
 			case <-runner.TemplateRenderedCh():
-				log.Printf("\nTemplate rendered...")
+				log.Printf("Template rendered...")
 			case <-runner.RenderEventCh():
-				log.Printf("\nTemplate events...")
+				log.Printf("Template events...")
 			}
 			for i, event := range runner.RenderEvents() {
 				if now.After(event.UpdatedAt) {
-					log.Printf("... received event %v: updated before last check (%v < %v)", i, event.UpdatedAt, now)
+					//log.Printf("... received event %v: updated before last check (%v < %v)", i, event.UpdatedAt, now)
 					continue
 				} else if next.Before(event.UpdatedAt) {
-					log.Printf("... received event %v: updated at %v", i, event.UpdatedAt)
+					//log.Printf("... received event %v: updated at %v", i, event.UpdatedAt)
 					next = event.UpdatedAt
 				}
 
 				fname := path.Base(*event.TemplateConfigs[0].Source)
 				if event.MissingDeps != nil {
 					for _, dep := range event.MissingDeps.List() {
-						log.Printf("Missing dep for %v: %v", fname, dep)
+						log.Printf("[%d|%v] Missing dep for %v: %v", i, event.UpdatedAt, fname, dep)
 						numMissingDeps += 1
 					}
 				}
@@ -321,9 +326,9 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 				if len(event.Contents) > 0 {
 					numRendering += 1
 					if ns.PrintRendered {
-						log.Printf("Rendered %v:\n%s", fname, string(event.Contents))
+						log.Printf("[%d|%v] Rendered %v:\n%s", i, event.UpdatedAt, fname, string(event.Contents))
 					} else {
-						log.Printf("Rendered %v", fname)
+						log.Printf("[%d|%v] Rendered %v", i, event.UpdatedAt, fname)
 					}
 					err = nil
 					if strings.HasSuffix(fname, ".json.tmpl") {
@@ -332,11 +337,11 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 						err = ns.runNomadJob(fname, event.Contents)
 					}
 					if err != nil {
-						log.Printf("ERROR rendering %v: %v", fname, err)
+						log.Printf("[%d|%v] ERROR rendering %v: %v", i, event.UpdatedAt, fname, err)
 					}
 				}
 			}
-			log.Printf("Handled events updated last at %v", next)
+			//log.Printf("Handled events updated last at %v", next)
 			now = next
 		}
 		log.Printf("Templating stopped.")
