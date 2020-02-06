@@ -317,9 +317,10 @@ func (ns *NomadSpace) exec(ctx context.Context, inputDir string) error {
 				} else {
 					log.Printf("Rendered %v", fname)
 				}
+				err = nil
 				if strings.HasSuffix(fname, ".json.tmpl") {
 					err = ns.runJSONJob(fname, event.Contents)
-				} else {
+				} else if strings.HasSuffix(fname, ".nomad.tmpl") {
 					err = ns.runNomadJob(fname, event.Contents)
 				}
 				if err != nil {
