@@ -7,6 +7,7 @@ RUN go get ./...
 RUN go install . ./plugins/... ./cmd/...
 
 FROM alpine
+RUN apk add --no-cache dnsmasq
 COPY --from=build /go/bin/nomadspace /bin/nomadspace
 COPY --from=build /go/bin/ns /bin/ns
 CMD /bin/nomadspace

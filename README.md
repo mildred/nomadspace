@@ -18,14 +18,57 @@ the directory, perfornm a few modification to them, and run them in Nomad.
 
 ### Invocation ###
 
+Usual options are:
+
 - `NOMADSPACE_INPUT_DIR` or `--input-dir`: selects the input directory where to
   look for files
 
 - `NOMAD_JOB_NAME` or `--job-name`: the nomad job name nomadspace is running as,
-  used to construct a unique nomadspace id.
+  used to construct a unique nomadspace id. Filled in automatically by Nomad.
+
+DNS options to override jobs:
+
+- `NOMADSPACE_DNS_SERVER` or `--dns-server`: if non empty, override DNS server
+  with this value.
+
+- `NOMADSPACE_DNS_SEARCH` or `--dns-search`: if non empty, override DNS search
+  with this value. `${NS}` is replaced with the actual namespace string.
+
+    - `NOMADSPACE_DNS_SEARCH_CONSUL=true` or `--dns-search-consul`:
+      override DNS search to `service.consul.`.
+
+    - `NOMADSPACE_DNS_SEARCH_NSDNS=true` or `--dns-search-nsdns`:
+      override DNS search to `service.${NS}.ns-consul.`. Automatically set if
+      `NOMADSPACE_NSDNS` is true.
+
+dnsmasq Options:
+
+- `NOMADSPACE_DNSMASQ` or `--dnsmasq`: Enable dnsmasq server in background.
+
+- `NOMADSPACE_DNSMASQ_LISTEN` or `--dnsmasq-listen`: Change dnsmasq listen
+  address and port.
+
+
+NSDNS Options:
+
+- `NOMADSPACE_NSDNS` or `--nsdns`: Enable nsdns server in background.
+
+- `NSDNS_CONSUL_DOMAIN` or `--nsdns-consul-domain`: to override
+  default Consul domain.
+
+- `NSDNS_CONSUL_SERVER` or `--nsdns-consul-server`: to override
+  default Consul DNS server address.
+
+- `NSDNS_DOMAIN` or `--nsdns-domain`: to override default nsdns
+  domain.
+
+- `NSDNS_LISTEN_ADDR` or `--nsdns-listen`: to override default nsdns
+  listening address and port.
+
+Debug options:
 
 - `NOMADSPACE_PRINT_RENDERED` or `--print-rendered`: prints rendered templates.
-      
+
 - `NOMADSPACE_VERBOSE_CONSUL_TEMPLATE` or `--verbose-consul-template`: to
   increase template engine verbosity.
 
@@ -36,16 +79,26 @@ A unique token is created and added in front of the job name. This token is also
 made available as metadata in the job file. It is recommended that Consul keys
 that the job uses should use this token as a prefix to avoid name conflicts.
 
-The following values are available:
 
-- metadata "ns" containing the namespace id
-- metadata "ns.prefix" containing the namespace prefix (`$NS_ID-`)
-- environment variable `NOMADSPACE_ID` for each task
+- New values are added to the job:
 
-The following modifications are made:
+    - metadata "ns" containing the namespace id (`$NS_ID`)
+    - metadata "ns.prefix" containing the namespace prefix (`$NS_ID-`)
+    - environment variable `NOMADSPACE_ID` for each task
 
-- Nomad job name is prefixed by the namespace prefix
-- Consul service names are prefixed by the namespace prefix
+- Name of some resources are modified:
+
+    - Nomad job name is prefixed by the namespace prefix
+    - Consul service names are prefixed by the namespace prefix
+
+- DNS settings are altered if desired:
+
+    - DNS server address is set to `NOMADSPACE_DNS_SERVER`
+    - DNS search is set to `NOMADSPACE_DNS_SEARCH` (`${NS}` is replaced by the
+      namespace first)
+
+Prior to any of this, the whole job file can be templated using consul-template
+using `[[` and `]]` as delimiters. See below for more details on this.
 
 
 ### Nomadspace hierarchies ###
@@ -62,13 +115,14 @@ correct child nomadspace id.
 ### Job templating ###
 
 Files can be templated when they end up with `.tmpl`. JSON jobs can be templated
-if they end up with `.json.tmpl`.
+if they end up with `.json.tmpl` and HCL Nomad jobs must end with '.nomad.tmpl'.
 
 Templating is performed with
 [consul-template](https://github.com/hashicorp/consul-template#templating-language)
 based itself on [Go templates](https://golang.org/pkg/text/template/)
 and additional commands are available. This allows nomad job to be updated
 automatically on Vault or Consul key change, and react to environment changes.
+The templating delimiters are `[[` and `]]`.
 
 The additional environment variables in templating available (through
 `env "ENV_NAME"`) are:
@@ -98,12 +152,7 @@ Without input, returns the current nomadspace id (taken from the environment)
     - If the file name ends with ".json", parse it as a JSON job
     - If the file name ends with ".nomad", parse it as a Nomad job and convert
       it internally to JSON
-    - Perform a few modification to the JSON job:
-        - prefix the job name by "$NS_ID-"
-        - add a metadata "ns" with "$NS_ID"
-        - add a metadata "ns.prefix" with "$NS_ID-"
-        - add environment variables for each task `NOMADSPACE_ID`
-        - prefix each service stanza by "$NS_ID-"
+    - Perform a few modification to the JSON job (see above)
     - Run the job in Nomad
 
 ### Future ideas ###

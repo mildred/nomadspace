@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/api"
 	"github.com/mildred/nomadspace/dns"
+	"github.com/mildred/nomadspace/dnsmasq"
 	"github.com/mildred/nomadspace/ns"
 	"github.com/mildred/nomadspace/waitgroup"
 )
@@ -77,6 +78,8 @@ func run(ctx context.Context) error {
 	var dnsSearchConsul bool
 	var nsdnsEnable bool
 	var nsdnsArgs nsdns.Args
+	var dnsmasqArgs dnsmasq.Args
+	var dnsmasqEnable bool
 	var logCT bool
 
 	flag.StringVar(&inputDir,
@@ -106,12 +109,18 @@ func run(ctx context.Context) error {
 	flag.BoolVar(&dnsSearchConsul,
 		"dns-search-consul", boolEnv("NOMADSPACE_DNS_SEARCH_CONSUL", false),
 		"Alias for --dns-search=service.consul. [NOMADSPACE_DNS_SEARCH_CONSUL]")
+	flag.BoolVar(&dnsmasqEnable,
+		"dnsmasq", boolEnv("NOMADSPACE_DNSMASQ", false),
+		"Start dnsmasq in background [NOMADSPACE_DNSMASQ]")
+	flag.StringVar(&dnsmasqArgs.Listen,
+		"dnsmasq-listen", stringEnv("NOMADSPACE_DNSMASQ_LISTEN", "127.0.0.1:53"),
+		"Listen address [NOMADSPACE_DNSMASQ_LISTEN]")
 	flag.BoolVar(&nsdnsEnable,
 		"nsdns", boolEnv("NOMADSPACE_NSDNS", false),
 		"Start DNS server and set --dns-search (--dns-server should be set to reachable IP address) [NOMADSPACE_NSDNS]")
 	flag.StringVar(&nsdnsArgs.ConsulServer,
-		"nsdns-consul-server", "127.0.0.1:8600",
-		"Consul DNS server")
+		"nsdns-consul-server", stringEnv("NOMADSPACE_CONSUL_SERVER", stringEnv("NSDNS_CONSUL_SERVER", "127.0.0.1:8600")),
+		"Consul DNS server [NOMADSPACE_CONSUL_SERVER, NSDNS_CONSUL_SERVER]")
 	flag.StringVar(&nsdnsArgs.Listen,
 		"nsdns-listen", stringEnv("NSDNS_LISTEN_ADDR", "127.0.0.1:9653"),
 		"Listen address [NSDNS_LISTEN_ADDR]")
@@ -119,8 +128,8 @@ func run(ctx context.Context) error {
 		"nsdns-domain", stringEnv("NSDNS_DOMAIN", "ns-consul."),
 		"Domain to serve [NSDNS_DOMAIN]")
 	flag.StringVar(&nsdnsArgs.ConsulDomain,
-		"nsdns-consul-domain", stringEnv("NSDNS_CONSUL_DOMAIN", "consul."),
-		"Domain to recurse to consul [NSDNS_CONSUL_DOMAIN]")
+		"nsdns-consul-domain", stringEnv("NOMADSPACE_CONSUL_DOMAIN", stringEnv("NSDNS_CONSUL_DOMAIN", "consul.")),
+		"Domain to recurse to consul [NOMADSPACE_CONSUL_DOMAIN, NSDNS_CONSUL_DOMAIN]")
 	flag.Parse()
 
 	if dnsSearchConsul {
@@ -138,6 +147,19 @@ func run(ctx context.Context) error {
 	if nsdnsEnable && dnsSearch == "" {
 		dnsSearch = "service.${NS}.ns-consul."
 	}
+
+	dnsmasqArgs.ConsulEnable = true
+	dnsmasqArgs.ConsulAddr   = nsdnsArgs.ConsulServer
+	dnsmasqArgs.ConsulDomain = nsdnsArgs.ConsulDomain
+	dnsmasqArgs.NsdnsEnable = nsdnsEnable
+	dnsmasqArgs.NsdnsAddr   = nsdnsArgs.Listen
+	dnsmasqArgs.NsdnsDomain = nsdnsArgs.Domain
+
+	// dnsmasq requires special privileges unless --user=root is specified
+	// See:
+	// http://lists.thekelleys.org.uk/pipermail/dnsmasq-discuss/2019q1/012840.html
+	// https://github.com/andyshinn/docker-dnsmasq/issues/6
+	dnsmasqArgs.ExtraArgs = strings.Split(stringEnv("NOMADSPACE_DNSMASQ_EXTRA_FLAGS", "--user=root"), " ")
 
 	l := log.New(os.Stderr, "", log.LstdFlags)
 	l.Printf("Starting NomadSpace")
@@ -181,6 +203,12 @@ func run(ctx context.Context) error {
 	if nsdnsEnable {
 		wg.Start(func() error {
 			return nsdns.Run(ctx, &nsdnsArgs)
+		})
+	}
+
+	if dnsmasqEnable {
+		wg.Start(func() error {
+			return dnsmasq.Run(ctx, l, &dnsmasqArgs)
 		})
 	}
 
@@ -349,7 +377,7 @@ func (ns *NomadSpace) exec(ctx context.Context, l *log.Logger, inputDir string) 
 						err = ns.runNomadJob(l, fname, event.Contents)
 					}
 					if err != nil {
-						l.Printf("[%d] ERROR rendering %v: %v", i, event.UpdatedAt, fname, err)
+						l.Printf("[%d] ERROR rendering %v: %v", i, fname, err)
 					}
 				}
 			}
